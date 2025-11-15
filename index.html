@@ -1,0 +1,1537 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Gestión de Ventas y Finanzas de Vitor</title>
+    <!-- Carga de Tailwind CSS -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700&display=swap');
+        body {
+            font-family: 'Inter', sans-serif;
+            background-color: #f7f7f9;
+        }
+        .tab-button.active {
+            border-bottom-width: 3px;
+            border-color: #3b82f6; /* blue-500 */
+            color: #3b82f6;
+            font-weight: 600;
+        }
+        .card {
+            box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1), 0 2px 4px -2px rgba(0, 0, 0, 0.06);
+        }
+        .modal {
+            transition: opacity 0.3s ease-in-out;
+        }
+    </style>
+</head>
+<body>
+
+<div id="app" class="min-h-screen bg-gray-50 flex flex-col">
+    <!-- Header -->
+    <header class="bg-white shadow-md sticky top-0 z-10">
+        <div class="max-w-4xl mx-auto px-4 sm:px-6 lg:px-8 py-3 flex justify-between items-center">
+            <h1 class="text-xl font-bold text-gray-800">Control de Negocio | Vitor</h1>
+            <div class="text-xs text-gray-500 rounded-full bg-gray-100 px-3 py-1 truncate" id="userIdDisplay">Cargando...</div>
+        </div>
+        <!-- Tabs -->
+        <nav class="max-w-4xl mx-auto px-4 sm:px-6 lg:px-8 flex space-x-4 border-b border-gray-200">
+            <!-- Pestaña Vendedores Eliminada -->
+            <button class="tab-button py-3 px-2 text-sm text-gray-600 hover:text-blue-500 active" data-tab="pos">Gestión de POS y Vendedores</button>
+            <button class="tab-button py-3 px-2 text-sm text-gray-600 hover:text-blue-500" data-tab="productos">Productos</button> <!-- NUEVA PESTAÑA -->
+            <button class="tab-button py-3 px-2 text-sm text-gray-600 hover:text-blue-500" data-tab="gastos">Gastos</button>
+            <button class="tab-button py-3 px-2 text-sm text-gray-600 hover:text-blue-500" data-tab="resumen">Resumen</button>
+            <button class="tab-button py-3 px-2 text-sm text-gray-600 hover:text-blue-500" data-tab="config">Configuración</button>
+        </nav>
+    </header>
+
+    <!-- Main Content Area -->
+    <main class="flex-grow max-w-4xl mx-auto w-full px-4 sm:px-6 lg:px-8 py-6">
+        <div id="content-container">
+            <!-- Content will be injected here -->
+        </div>
+    </main>
+
+    <!-- Custom Modal for Alerts/Confirmation -->
+    <div id="custom-modal" class="modal fixed inset-0 bg-gray-900 bg-opacity-75 flex items-center justify-center z-50 opacity-0 pointer-events-none">
+        <div class="bg-white p-6 rounded-xl shadow-2xl max-w-sm w-full transform scale-95 transition-all">
+            <h3 class="text-lg font-semibold text-gray-900 mb-4" id="modal-title">Atención</h3>
+            <p class="text-sm text-gray-600 mb-6" id="modal-message"></p>
+            <div class="flex justify-end space-x-3">
+                <button id="modal-cancel" class="px-4 py-2 bg-gray-200 text-gray-700 rounded-lg text-sm hover:bg-gray-300 transition">Cancelar</button>
+                <button id="modal-confirm" class="px-4 py-2 bg-red-600 text-white rounded-lg text-sm hover:bg-red-700 transition">Confirmar</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Loading Indicator -->
+    <div id="loading-overlay" class="fixed inset-0 bg-gray-100 bg-opacity-70 flex items-center justify-center z-50 transition-opacity duration-300">
+        <div class="flex flex-col items-center">
+            <div class="animate-spin rounded-full h-12 w-12 border-b-2 border-blue-500"></div>
+            <p class="mt-4 text-gray-600">Cargando datos...</p>
+        </div>
+    </div>
+</div>
+
+<script type="module">
+    import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
+    import { getAuth, signInAnonymously, signInWithCustomToken, onAuthStateChanged, setPersistence, browserSessionPersistence } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
+    import { getFirestore, doc, setDoc, onSnapshot, collection, query, updateDoc, deleteDoc, addDoc, Timestamp, runTransaction, setLogLevel } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
+
+    // --- Variables Globales ---
+    const TABS = { POS: 'pos', PRODUCTOS: 'productos', GASTOS: 'gastos', RESUMEN: 'resumen', CONFIG: 'config' };
+    let currentTab = TABS.POS; 
+    let vendedores = [];
+    let puntosDeVenta = [];
+    let movimientosPOS = [];
+    let gastos = [];
+    let productos = []; 
+    let stockPOS = []; // CAMBIO: De stockVendedores a stockPOS
+
+    let porcentajeVendedor = 20;
+    let porcentajeEncargadoPOS = 10;
+
+    let userId = null;
+    let db, auth;
+    let isAuthReady = false;
+    let firestoreListenersUnsubscribe = [];
+    
+    const appId = typeof __app_id !== 'undefined' ? __app_id : 'default-app-id';
+    const firebaseConfig = typeof __firebase_config !== 'undefined' ? JSON.parse(__firebase_config) : null;
+    const initialAuthToken = typeof __initial_auth_token !== 'undefined' ? __initial_auth_token : null;
+
+    // --- DOM Elements ---
+    const contentContainer = document.getElementById('content-container');
+    const tabButtons = document.querySelectorAll('.tab-button');
+    const loadingOverlay = document.getElementById('loading-overlay');
+    const userIdDisplay = document.getElementById('userIdDisplay');
+
+    // --- Firebase Initialization and Auth ---
+    if (firebaseConfig) {
+        setLogLevel('debug');
+        const app = initializeApp(firebaseConfig);
+        db = getFirestore(app);
+        auth = getAuth(app);
+
+        const setupAuth = async () => {
+            try {
+                await setPersistence(auth, browserSessionPersistence);
+                if (initialAuthToken) {
+                    await signInWithCustomToken(auth, initialAuthToken);
+                } else {
+                    await signInAnonymously(auth);
+                }
+            } catch (error) {
+                console.error("Firebase Auth Error:", error);
+            }
+        };
+
+        onAuthStateChanged(auth, (user) => {
+            for (const unsubscribe of firestoreListenersUnsubscribe) {
+                unsubscribe();
+            }
+            firestoreListenersUnsubscribe = [];
+            console.log("Limpiando listeners anteriores.");
+
+            if (user) {
+                console.log("Usuario autenticado:", user.uid);
+                userId = user.uid;
+                userIdDisplay.textContent = `ID Usuario: ${userId.substring(0, 10)}...`;
+                isAuthReady = true;
+                setupFirestoreListeners(); 
+                renderTab(currentTab);
+                hideLoading();
+            } else {
+                console.log("Usuario no autenticado, esperando...");
+                userId = null;
+                isAuthReady = false;
+                userIdDisplay.textContent = 'Autenticando...';
+                showLoading();
+            }
+        });
+
+        setupAuth();
+    } else {
+        console.error("Firebase config not available. Running in mock mode.");
+        userIdDisplay.textContent = 'Modo Simulación';
+        isAuthReady = true;
+        hideLoading();
+        renderTab(currentTab);
+    }
+
+    // --- Utility Functions ---
+    function showLoading() { loadingOverlay.classList.remove('opacity-0', 'pointer-events-none'); }
+    function hideLoading() { loadingOverlay.classList.add('opacity-0', 'pointer-events-none'); }
+
+    /**
+     * @param {string} tabName
+     */
+    function renderTab(tabName) {
+        currentTab = tabName;
+        tabButtons.forEach(button => {
+            button.classList.remove('active');
+            if (button.dataset.tab === tabName) {
+                button.classList.add('active');
+            }
+        });
+
+        switch (tabName) {
+            case TABS.POS:
+                renderPuntosDeVenta();
+                break;
+            case TABS.PRODUCTOS:
+                renderProductos();
+                break;
+            case TABS.GASTOS:
+                renderGastos();
+                break;
+            case TABS.RESUMEN:
+                renderResumen();
+                break;
+            case TABS.CONFIG:
+                renderConfiguracion();
+                break;
+        }
+    }
+
+    // --- Firebase Path & Listener Setup ---
+    /**
+     * @param {string} collectionName
+     * @returns {string}
+     */
+    const getCollectionPath = (collectionName) => {
+        if (!userId) {
+            console.error("¡getCollectionPath se llamó sin un userId!");
+            return '';
+        }
+        return `artifacts/${appId}/users/${userId}/${collectionName}`;
+    };
+
+    function setupFirestoreListeners() {
+        if (!isAuthReady || !db || !userId) {
+            console.warn("setupFirestoreListeners omitido, la autenticación no está lista o falta el userId.");
+            return;
+        }
+        console.log("Configurando listeners de Firestore con userId:", userId);
+
+        // Vendedores Listener
+        const unsubVendedores = onSnapshot(collection(db, getCollectionPath('vendedores')), (snapshot) => {
+            vendedores = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+            vendedores.sort((a, b) => (a.nombre > b.nombre) ? 1 : -1);
+            if (currentTab === TABS.POS) renderPuntosDeVenta(); 
+            if (currentTab === TABS.RESUMEN) renderResumen();
+        }, (error) => console.error("Error al escuchar Vendedores:", error));
+        firestoreListenersUnsubscribe.push(unsubVendedores);
+
+        // Listener de Productos (Catálogo)
+        const unsubProductos = onSnapshot(collection(db, getCollectionPath('productos')), (snapshot) => {
+            productos = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+            productos.sort((a, b) => (a.nombre > b.nombre) ? 1 : -1);
+            if (currentTab === TABS.PRODUCTOS) renderProductos();
+            if (currentTab === TABS.POS) renderPuntosDeVenta(); 
+        }, (error) => console.error("Error al escuchar Productos:", error));
+        firestoreListenersUnsubscribe.push(unsubProductos);
+
+        // CAMBIO: Listener de Stock de POS (en lugar de Vendedor)
+        const unsubStock = onSnapshot(collection(db, getCollectionPath('stock_pos')), (snapshot) => {
+            stockPOS = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+            if (currentTab === TABS.POS) renderPuntosDeVenta(); // Recargar POS para actualizar stock
+        }, (error) => console.error("Error al escuchar Stock POS:", error));
+        firestoreListenersUnsubscribe.push(unsubStock);
+
+        // Puntos de Venta (Entities) Listener
+        const unsubPOS = onSnapshot(collection(db, getCollectionPath('puntos_de_venta')), (snapshot) => {
+            puntosDeVenta = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+            puntosDeVenta.sort((a, b) => (a.nombre > b.nombre) ? 1 : -1);
+            if (currentTab === TABS.POS) renderPuntosDeVenta();
+        }, (error) => console.error("Error al escuchar Puntos de Venta:", error));
+        firestoreListenersUnsubscribe.push(unsubPOS);
+
+        // Movimientos POS Listener
+        const unsubMovPOS = onSnapshot(query(collection(db, getCollectionPath('movimientos_pos'))), (snapshot) => {
+            movimientosPOS = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+            movimientosPOS = movimientosPOS.map(m => ({
+                ...m,
+                concepto: m.concepto || m.punto_venta_nombre || 'Movimiento POS', 
+                tipo: m.tipo || 'EGRESO', 
+                punto_venta_nombre: undefined 
+            }));
+            movimientosPOS.sort((a, b) => b.fecha_envio.toMillis() - a.fecha_envio.toMillis());
+            if (currentTab === TABS.POS) renderPuntosDeVenta(); 
+            if (currentTab === TABS.RESUMEN) renderResumen();
+        }, (error) => console.error("Error al escuchar Movimientos POS:", error));
+        firestoreListenersUnsubscribe.push(unsubMovPOS);
+
+        // Gastos Listener
+        const unsubGastos = onSnapshot(collection(db, getCollectionPath('gastos')), (snapshot) => {
+            gastos = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+            gastos.sort((a, b) => b.fecha.toMillis() - a.fecha.toMillis());
+            if (currentTab === TABS.GASTOS) renderGastos();
+            if (currentTab === TABS.RESUMEN) renderResumen();
+        }, (error) => console.error("Error al escuchar Gastos:", error));
+        firestoreListenersUnsubscribe.push(unsubGastos);
+
+        // Config Listener
+        const unsubConfig = onSnapshot(doc(db, getCollectionPath('config'), 'global'), (docSnapshot) => {
+            if (docSnapshot.exists()) {
+                const data = docSnapshot.data();
+                porcentajeVendedor = data.porcentajeVendedor !== undefined ? data.porcentajeVendedor : 20;
+                porcentajeEncargadoPOS = data.porcentajeEncargadoPOS !== undefined ? data.porcentajeEncargadoPOS : 10;
+            } else {
+                setDoc(doc(db, getCollectionPath('config'), 'global'), { 
+                    porcentajeVendedor: 20,
+                    porcentajeEncargadoPOS: 10,
+                }).catch(e => console.error("Error setting default config:", e));
+            }
+            if (currentTab === TABS.CONFIG) renderConfiguracion();
+            if (currentTab === TABS.POS) renderPuntosDeVenta(); 
+            if (currentTab === TABS.RESUMEN) renderResumen(); 
+        }, (error) => console.error("Error al escuchar Config:", error));
+        firestoreListenersUnsubscribe.push(unsubConfig);
+    }
+
+    // --- Modal Implementation ---
+    /**
+     * @param {string} title
+     * @param {string} message
+     * @param {function(): void} onConfirm
+     * @param {boolean} isConfirm
+     */
+    function showModal(title, message, onConfirm, isConfirm = true) {
+        document.getElementById('modal-title').textContent = title;
+        document.getElementById('modal-message').textContent = message;
+        const modal = document.getElementById('custom-modal');
+        const confirmBtn = document.getElementById('modal-confirm');
+        const cancelBtn = document.getElementById('modal-cancel');
+        confirmBtn.onclick = () => {
+            modal.classList.add('opacity-0', 'pointer-events-none');
+            onConfirm();
+        };
+        cancelBtn.onclick = () => {
+            modal.classList.add('opacity-0', 'pointer-events-none');
+        };
+        cancelBtn.classList.toggle('hidden', !isConfirm);
+        confirmBtn.classList.toggle('bg-red-600', isConfirm);
+        confirmBtn.classList.toggle('hover:bg-red-700', isConfirm);
+        confirmBtn.textContent = isConfirm ? 'Confirmar' : 'Entendido';
+        modal.classList.remove('opacity-0', 'pointer-events-none');
+    }
+
+    // --- VENDEDORES (Salesperson) Logic (Las funciones de base de datos se mantienen) ---
+
+    /**
+     * @param {string} name
+     * @param {string} posId
+     * @param {string} posNombre
+     */
+    async function addVendedor(name, posId, posNombre) {
+        if (!db || !isAuthReady) return;
+        try {
+            showLoading();
+            await addDoc(collection(db, getCollectionPath('vendedores')), {
+                nombre: name,
+                deuda_generada: 0, 
+                pagado: 0,
+                posId: posId,
+                posNombre: posNombre
+            });
+            hideLoading();
+        } catch (e) {
+            console.error("Error adding vendedor:", e);
+            hideLoading();
+            showModal("Error", "No se pudo agregar el vendedor.", () => {}, false);
+        }
+    }
+
+    /**
+     * @param {string} id
+     * @param {'PAGO'} type
+     * @param {number} amount
+     * @param {string} vendedorNombre
+     */
+    async function updateVendedor(id, type, amount, vendedorNombre) {
+        // Esta función ahora solo maneja PAGOS.
+        if (type !== 'PAGO') {
+            console.warn("updateVendedor obsoleto para tipos que no sean PAGO");
+            return;
+        }
+
+        if (!db || !isAuthReady) return;
+        const vendRef = doc(db, getCollectionPath('vendedores'), id);
+        try {
+            let amountToPay = 0;
+            await runTransaction(db, async (transaction) => {
+                const vendDoc = await transaction.get(vendRef);
+                if (!vendDoc.exists()) throw new Error("Vendedor no existe!");
+                const data = vendDoc.data();
+                const updates = {};
+                const stats = calculateVendedorStats(data); // Calcula stats de deuda
+
+                if (type === 'PAGO') {
+                    if (amount > stats.pendiente_de_pago + 0.01) { 
+                        amountToPay = stats.pendiente_de_pago;
+                        showModal("Advertencia", `El pago de $${amount.toFixed(2)} excede la deuda pendiente de $${stats.pendiente_de_pago.toFixed(2)}. Solo se registrará el monto exacto de la deuda como pago ($${amountToPay.toFixed(2)}).`, () => {}, false);
+                    } else {
+                        amountToPay = amount;
+                    }
+                    if (amountToPay <= 0) {
+                        throw new Error(`El vendedor no tiene deuda pendiente para registrar este pago.`);
+                    }
+                    updates.pagado = (data.pagado || 0) + amountToPay;
+                }
+                transaction.update(vendRef, updates);
+            });
+            
+            if (type === 'PAGO' && amountToPay > 0) {
+                 await addMovimientoPOS(
+                    `Pago Deuda de Vendedor: ${vendedorNombre}`, 
+                    amountToPay,
+                    `Vendedor: ${vendedorNombre}`, 
+                    'Hub Central/Caja Principal', 
+                    'INGRESO' 
+                );
+            }
+        } catch (e) {
+            console.error("Error updating vendedor:", e);
+            showModal("Error de Transacción", e.message || "Ocurrió un error al actualizar al vendedor.", () => {}, false);
+        }
+    }
+
+    // --- NUEVAS FUNCIONES DE GESTIÓN DE STOCK (AHORA AL POS) ---
+
+    /**
+     * Entrega stock a un POS.
+     * @param {string} posId
+     * @param {string} productoId
+     * @param {string} productoNombre
+     * @param {number} cantidad
+     */
+    async function entregarStockAlPOS(posId, productoId, productoNombre, cantidad) {
+        if (!db || !isAuthReady || !posId || !productoId || !cantidad) return;
+
+        // El ID del documento de stock es una combinación
+        const stockDocId = `${posId}_${productoId}`;
+        const stockRef = doc(db, getCollectionPath('stock_pos'), stockDocId); // CAMBIO: stock_pos
+
+        try {
+            await runTransaction(db, async (transaction) => {
+                const stockDoc = await transaction.get(stockRef);
+                
+                if (!stockDoc.exists()) {
+                    // Si no existe, lo crea
+                    transaction.set(stockRef, {
+                        posId: posId, // NUEVO: Guardamos el posId
+                        productoId: productoId,
+                        productoNombre: productoNombre,
+                        cantidad: cantidad
+                    });
+                } else {
+                    // Si existe, incrementa la cantidad
+                    const newCantidad = (stockDoc.data().cantidad || 0) + cantidad;
+                    transaction.update(stockRef, { cantidad: newCantidad });
+                }
+            });
+        } catch (e) {
+            console.error("Error al entregar stock al POS:", e);
+            showModal("Error de Transacción", "No se pudo entregar el stock al POS.", () => {}, false);
+        }
+    }
+
+    /**
+     * Registra una venta, bajando stock del POS y subiendo deuda al Vendedor.
+     * @param {string} vendedorId
+     * @param {string} posId - NUEVO: Necesitamos saber de qué POS descontar
+     * @param {string} productoId
+     * @param {number} cantidadVendida
+     * @param {string} vendedorNombre
+     */
+    async function venderStock(vendedorId, posId, productoId, cantidadVendida, vendedorNombre) {
+        if (!db || !isAuthReady || !vendedorId || !posId || !productoId || !cantidadVendida) return;
+
+        const stockDocId = `${posId}_${productoId}`; // CAMBIO: Usamos posId
+        const stockRef = doc(db, getCollectionPath('stock_pos'), stockDocId); // CAMBIO: stock_pos
+        const vendRef = doc(db, getCollectionPath('vendedores'), vendedorId);
+        
+        const producto = productos.find(p => p.id === productoId);
+        if (!producto || !producto.precio) {
+            showModal("Error de Producto", "Este producto no existe o no tiene precio en el catálogo.", () => {}, false);
+            return;
+        }
+        const precioProducto = producto.precio;
+
+        try {
+            await runTransaction(db, async (transaction) => {
+                const stockDoc = await transaction.get(stockRef);
+                const vendDoc = await transaction.get(vendRef);
+
+                if (!stockDoc.exists() || !vendDoc.exists()) {
+                    throw new Error("El vendedor o el stock de este producto no existen en el POS.");
+                }
+
+                const stockData = stockDoc.data();
+                const currentStock = stockData.cantidad || 0;
+
+                if (cantidadVendida > currentStock + 0.01) { 
+                    throw new Error(`No hay stock suficiente en el POS. Stock actual: ${currentStock.toFixed(0)}, Venta: ${cantidadVendida.toFixed(0)}`);
+                }
+
+                // 1. Actualizar Stock del POS
+                const newStock = currentStock - cantidadVendida;
+                transaction.update(stockRef, { cantidad: newStock });
+
+                // 2. Actualizar Deuda del Vendedor
+                const vendData = vendDoc.data();
+                const montoDeudaGenerada = cantidadVendida * precioProducto;
+                const newDeudaGenerada = (vendData.deuda_generada || 0) + montoDeudaGenerada;
+                transaction.update(vendRef, { deuda_generada: newDeudaGenerada });
+            });
+        } catch (e) {
+            console.error("Error al vender stock:", e);
+            showModal("Error de Transacción", e.message || "No se pudo registrar la venta.", () => {}, false);
+        }
+    }
+
+
+    function calculateVendedorStats(v) {
+        const deuda_total = v.deuda_generada || 0;
+        const pendiente_de_pago = (v.deuda_generada || 0) - (v.pagado || 0);
+        return { deuda_total, pendiente_de_pago };
+    }
+
+    /**
+     * @param {string} id
+     */
+    async function deleteVendedor(id) {
+        if (!db || !isAuthReady) return;
+        
+        // Antes de eliminar un vendedor, nos aseguramos que no tenga stock
+        // en el modelo viejo (stock_vendedor) por si acaso.
+        // En el nuevo modelo (stock_pos), el stock no pertenece al vendedor,
+        // así que no necesitamos hacer nada.
+        
+        try {
+            showLoading();
+            await deleteDoc(doc(db, getCollectionPath('vendedores'), id));
+            // Opcional: Limpiar stock_vendedor si aún existiera
+            // const q = query(collection(db, getCollectionPath('stock_vendedor')), where("vendedorId", "==", id));
+            // const querySnapshot = await getDocs(q);
+            // querySnapshot.forEach((doc) => deleteDoc(doc.ref));
+            hideLoading();
+        } catch (e) {
+            console.error("Error deleting vendedor:", e);
+            hideLoading();
+            showModal("Error", "No se pudo eliminar el vendedor.", () => {}, false);
+        }
+    }
+
+    /**
+     * Función auxiliar para renderizar la tarjeta de un vendedor
+     * @param {object} v - El objeto vendedor
+     * @returns {string} - El HTML de la tarjeta
+     */
+    function renderVendedorCard(v) {
+        const stats = calculateVendedorStats(v);
+        const isDebtPending = stats.pendiente_de_pago > 0.01;
+        
+        // CAMBIO: Obtener el stock del POS al que pertenece este vendedor
+        const posStock = stockPOS.filter(s => s.posId === v.posId && s.cantidad > 0);
+        
+        return `
+            <div class="p-4 rounded-lg border ${isDebtPending ? 'border-red-200 bg-red-50' : 'border-gray-200'}">
+                <h3 class="text-lg font-bold text-gray-900 mb-2">${v.nombre}</h3>
+                
+                <!-- Métricas Financieras -->
+                <div class="grid grid-cols-2 gap-2 text-sm text-gray-700 mb-4">
+                    <p class="font-medium">Deuda Generada Total: <span class="font-bold text-red-600">$${stats.deuda_total.toFixed(2)}</span></p>
+                    <p class="font-medium">Pagado: <span class="font-bold text-green-600">$${(v.pagado || 0).toFixed(2)}</span></p>
+                    
+                    <p class="font-medium col-span-2">
+                        PENDIENTE DE PAGO: 
+                        <span class="font-extrabold ${isDebtPending ? 'text-red-700' : 'text-green-700'} text-lg">$${Math.max(0, stats.pendiente_de_pago).toFixed(2)}</span>
+                    </p>
+                </div>
+
+                <!-- CAMBIO: Stock Físico del POS (Compartido) -->
+                <div class="mb-4 border-t pt-4">
+                    <h4 class="text-sm font-semibold text-gray-800 mb-2">Stock Físico del POS (Compartido):</h4>
+                    ${posStock.length === 0 
+                        ? '<p class="text-xs text-gray-500 italic">Este POS no tiene stock.</p>'
+                        : `<ul class="list-disc list-inside text-sm text-gray-600">
+                            ${posStock.map(s => `<li><span class="font-medium">${s.productoNombre}</span>: ${s.cantidad.toFixed(0)} unidades</li>`).join('')}
+                           </ul>`
+                    }
+                </div>
+
+                <!-- Acciones -->
+                <div class="space-y-3 pt-4 border-t border-gray-100">
+                    
+                    <!-- CAMBIO: Sección de Entregar Stock ELIMINADA de aquí -->
+
+                    <!-- Vender Stock (Ahora descuenta del POS) -->
+                    <div class="p-2 bg-yellow-50 rounded-lg border border-yellow-300">
+                        <label class="text-xs font-semibold text-yellow-800">1. Registrar Venta (Desde Stock del POS)</label>
+                        <div class="flex space-x-2 mt-1">
+                            <select id="prod-venta-${v.id}" class="flex-grow p-2 border border-yellow-300 rounded-lg text-sm bg-white">
+                                <option value="" disabled selected>Selecciona producto (del POS)...</option>
+                                ${posStock.map(s => `<option value="${s.productoId}">${s.productoNombre} (Stock: ${s.cantidad.toFixed(0)})</option>`).join('')}
+                            </select>
+                            <input type="number" id="qty-venta-${v.id}" placeholder="Qty" class="w-20 p-2 border border-yellow-300 rounded-lg text-sm">
+                            <!-- CAMBIO: Añadido data-pos-id -->
+                            <button data-id="${v.id}" data-type="VENTA" data-name="${v.nombre}" data-pos-id="${v.posId}" class="action-btn-stock bg-yellow-100 text-yellow-800 font-medium py-2 px-3 rounded-lg text-xs hover:bg-yellow-200">Vender</button>
+                        </div>
+                    </div>
+                    
+                    <!-- Registrar Pago -->
+                    <div class="p-2 bg-green-50 rounded-lg border border-green-300">
+                        <label class="text-xs font-semibold text-green-800">2. Registrar Pago (Abono a Deuda)</label>
+                        <div class="flex space-x-2 mt-1">
+                            <input type="number" id="monto-pago-${v.id}" placeholder="Monto del Pago" class="flex-grow p-2 border border-green-300 rounded-lg text-sm">
+                            <button data-id="${v.id}" data-type="PAGO" data-name="${v.nombre}" class="action-btn-stock bg-green-100 text-green-800 font-medium py-2 px-3 rounded-lg text-xs hover:bg-green-200">Pagar</button>
+                        </div>
+                    </div>
+
+                    <button data-id="${v.id}" class="delete-vendedor-btn text-red-500 hover:text-red-700 text-xs mt-2">Eliminar Vendedor</button>
+                </div>
+            </div>
+        `;
+    }
+
+    // --- PUNTOS DE VENTA (POS) ENTITY Logic ---
+    /**
+     * @param {string} name
+     * @param {string} encargado
+     */
+    async function addPuntoDeVenta(name, encargado) {
+        if (!db || !isAuthReady) return;
+        try {
+            showLoading();
+            await addDoc(collection(db, getCollectionPath('puntos_de_venta')), {
+                nombre: name,
+                encargado: encargado,
+                creado_en: Timestamp.now(),
+            });
+            hideLoading();
+        } catch (e) {
+            console.error("Error adding punto de venta:", e);
+            hideLoading();
+            showModal("Error", "No se pudo agregar el Punto de Venta.", () => {}, false);
+        }
+    }
+
+    /**
+     * @param {string} id
+     */
+    async function deletePuntoDeVenta(id) {
+        if (!db || !isAuthReady) return;
+        
+        const sellersInPos = vendedores.filter(v => v.posId === id).length;
+        if (sellersInPos > 0) {
+            showModal("Acción Requerida", `Este POS tiene ${sellersInPos} vendedor(es) asignado(s). Primero debe eliminar a los vendedores.`, () => {}, false);
+            return;
+        }
+
+        // CAMBIO: Validar que el POS no tenga stock
+        const posStock = stockPOS.filter(s => s.posId === id && s.cantidad > 0);
+        if (posStock.length > 0) {
+            showModal("Acción Requerida", `Este POS tiene ${posStock.length} producto(s) con stock. Primero debe vender o reasignar ese stock.`, () => {}, false);
+            return;
+        }
+        
+        try {
+            showLoading();
+            await deleteDoc(doc(db, getCollectionPath('puntos_de_venta'), id));
+            // Opcional: Limpiar stock_pos de este POS (aunque ya debería estar en 0)
+            // Opcional: Limpiar movimientos de este POS
+            hideLoading();
+        } catch (e) {
+            console.error("Error deleting punto de venta:", e);
+            hideLoading();
+            showModal("Error", "No se pudo eliminar el Punto de Venta.", () => {}, false);
+        }
+    }
+
+    // --- PUNTOS DE VENTA (POS) Movement Logic ---
+    /**
+     * @param {string} concepto
+     * @param {number} monto
+     * @param {string} envia
+     * @param {string} recibe
+     * @param {'INGRESO'|'EGRESO'} tipo
+     */
+    async function addMovimientoPOS(concepto, monto, envia, recibe, tipo) {
+        if (!db || !isAuthReady) return;
+        try {
+            await addDoc(collection(db, getCollectionPath('movimientos_pos')), {
+                fecha_envio: Timestamp.now(),
+                monto: monto,
+                concepto: concepto, 
+                encargado_envia: envia,
+                receptor_hub: recibe,
+                tipo: tipo, 
+            });
+        } catch (e) {
+            console.error("Error adding movimiento POS:", e);
+            showModal("Error", "No se pudo registrar el movimiento.", () => {}, false);
+        }
+    }
+
+    /**
+     * @param {string} id
+     */
+    async function deleteMovimientoPOS(id) {
+        if (!db || !isAuthReady) return;
+        try {
+            showLoading();
+            await deleteDoc(doc(db, getCollectionPath('movimientos_pos'), id));
+            hideLoading();
+        } catch (e) {
+            console.error("Error deleting movimiento POS:", e);
+            hideLoading();
+            showModal("Error", "No se pudo eliminar el movimiento.", () => {}, false);
+        }
+    }
+
+    // --- RENDERIZADO PESTAÑA POS (PRINCIPAL) ---
+    function renderPuntosDeVenta() {
+        const unassignedSellers = vendedores.filter(v => !v.posId);
+        
+        const html = `
+            <div class="space-y-6">
+                
+                <!-- 1. Gestión de Entidades POS -->
+                <div class="card bg-white p-4 rounded-xl">
+                    <h2 class="text-xl font-semibold mb-3 text-gray-800">1. Gestión de Puntos de Venta (POS)</h2>
+                    <div class="grid grid-cols-1 sm:grid-cols-2 gap-4 mb-4">
+                        <input type="text" id="newPosName" placeholder="Nombre del Nuevo Punto de Venta" class="p-2 border border-gray-300 rounded-lg focus:ring-blue-500 focus:border-blue-500 text-sm">
+                        <input type="text" id="newPosEncargado" placeholder="Nombre del Encargado" class="p-2 border border-gray-300 rounded-lg focus:ring-blue-500 focus:border-blue-500 text-sm">
+                    </div>
+                    <button id="addPosBtn" class="w-full bg-blue-600 hover:bg-blue-700 text-white font-semibold py-2 px-4 rounded-lg shadow-md transition duration-300 text-sm">
+                        Agregar POS
+                    </button>
+                </div>
+
+                <!-- 2. Lista de POS y Vendedores Asignados -->
+                <div class="space-y-6">
+                    <h2 class="text-xl font-semibold text-gray-800">2. Vendedores por Punto de Venta</h2>
+                    ${puntosDeVenta.length === 0 ? '<p class="text-gray-500">Aún no has creado un Punto de Venta. Empieza por crear uno arriba.</p>' : ''}
+                    
+                    ${puntosDeVenta.map(pos => {
+                        const sellersInPos = vendedores.filter(v => v.posId === pos.id);
+                        // CAMBIO: Obtener el stock de ESTE POS
+                        const posStock = stockPOS.filter(s => s.posId === pos.id && s.cantidad > 0);
+                        
+                        return `
+                        <div class="card bg-white p-4 rounded-xl border border-blue-200">
+                            <!-- POS Header -->
+                            <div class="flex justify-between items-center mb-3 pb-3 border-b border-blue-100">
+                                <h3 class="text-lg font-bold text-blue-800">
+                                    ${svgIcon('store', 'w-5 h-5 inline-block mr-2 text-blue-600')}
+                                    POS: ${pos.nombre} (Enc: ${pos.encargado})
+                                </h3>
+                                <button data-id="${pos.id}" class="delete-pos-entity-btn text-red-400 hover:text-red-600">
+                                    ${svgIcon('trash', 'w-4 h-4')}
+                                </button>
+                            </div>
+
+                            <!-- NUEVO: Gestión de Inventario del POS -->
+                            <div class="grid grid-cols-1 md:grid-cols-2 gap-4 mb-4">
+                                <!-- Columna de Entregar Stock -->
+                                <div class="p-3 bg-blue-50 rounded-lg">
+                                    <h4 class="text-sm font-semibold text-blue-700 mb-2">Entregar Stock al POS</h4>
+                                    <div class="flex flex-col space-y-2">
+                                        <select id="prod-entrega-pos-${pos.id}" class="p-2 border border-blue-300 rounded-lg text-sm bg-white">
+                                            <option value="" disabled selected>Selecciona producto...</option>
+                                            ${productos.map(p => `<option value="${p.id}">${p.nombre} ($${p.precio.toFixed(2)})</option>`).join('')}
+                                        </select>
+                                        <input type="number" id="qty-entrega-pos-${pos.id}" placeholder="Cantidad a Entregar" class="p-2 border border-blue-300 rounded-lg text-sm">
+                                        <button data-pos-id="${pos.id}" class="action-btn-entrega-pos bg-blue-600 hover:bg-blue-700 text-white font-semibold py-2 px-3 rounded-lg text-sm">
+                                            Cargar Stock al POS
+                                        </button>
+                                    </div>
+                                </div>
+                                <!-- Columna de Stock Actual -->
+                                <div class="p-3 bg-gray-50 rounded-lg">
+                                    <h4 class="text-sm font-semibold text-gray-700 mb-2">Inventario Actual del POS</h4>
+                                    ${posStock.length === 0 
+                                        ? '<p class="text-xs text-gray-500 italic">Este POS no tiene stock.</p>'
+                                        : `<ul class="list-disc list-inside text-sm text-gray-600">
+                                            ${posStock.map(s => `<li><span class="font-medium">${s.productoNombre}</span>: ${s.cantidad.toFixed(0)} u.</li>`).join('')}
+                                           </ul>`
+                                    }
+                                </div>
+                            </div>
+                            
+                            <!-- Add Vendedor Form (specific to this POS) -->
+                            <div class="p-3 bg-gray-100 rounded-lg mb-4 border-t border-b">
+                                <h4 class="text-sm font-semibold text-gray-700 mb-2">Agregar Vendedor a ${pos.nombre}</h4>
+                                <div class="flex flex-col sm:flex-row space-y-2 sm:space-y-0 sm:space-x-2">
+                                    <input type="text" id="new-vendedor-name-${pos.id}" placeholder="Nombre del Nuevo Vendedor" class="flex-grow p-2 border border-gray-300 rounded-lg text-sm">
+                                    <button data-pos-id="${pos.id}" data-pos-nombre="${pos.nombre}" class="add-vendedor-to-pos-btn bg-gray-600 hover:bg-gray-700 text-white font-semibold py-2 px-3 rounded-lg text-sm">
+                                        Agregar Vendedor
+                                    </button>
+                                </div>
+                            </div>
+
+                            <!-- Lista de Vendedores -->
+                            <h4 class="text-base font-semibold text-gray-800 mb-2">Vendedores (${sellersInPos.length})</h4>
+                            ${sellersInPos.length === 0 ? '<p class="text-gray-500 text-sm italic">No hay vendedores asignados a este punto de venta.</p>' : ''}
+                            <div class="space-y-4">
+                                ${sellersInPos.map(v => renderVendedorCard(v)).join('')}
+                            </div>
+                        </div>
+                        `;
+                    }).join('')}
+                </div>
+                
+                <!-- Grupo para vendedores sin asignar (Legacy o error) -->
+                ${unassignedSellers.length > 0 ? `
+                <div class="card bg-white p-4 rounded-xl border border-red-300">
+                    <h3 class="text-lg font-bold text-red-800 mb-3 pb-2 border-b border-red-100">
+                        ${svgIcon('warning', 'w-5 h-5 inline-block mr-2 text-red-600')}
+                        Vendedores Sin Asignar
+                        <span class="text-sm font-medium bg-red-100 text-red-800 rounded-full px-2 py-0.5 ml-2">${unassignedSellers.length}</span>
+                    </h3>
+                    <p class="text-xs text-gray-600 mb-4">Estos vendedores (probablemente antiguos) no están asignados a ningún Punto de Venta. Se recomienda eliminarlos y volver a crearlos asignándolos a un POS.</p>
+                    <div class="space-y-4">
+                        ${unassignedSellers.map(v => renderVendedorCard(v)).join('')}
+                    </div>
+                </div>
+                ` : ''}
+
+                <!-- 3. Registrar EGRESO -->
+                <div class="card bg-white p-4 rounded-xl">
+                    <h2 class="text-xl font-semibold mb-3 text-gray-800">3. Registrar EGRESO/Pago a Proveedor</h2>
+                    <p class="text-xs text-red-500 mb-4 font-semibold">Nota: Estos movimientos se restan del Capital Neto como un Egreso.</p>
+                    <div class="grid grid-cols-2 gap-4">
+                        <input type="text" id="posConcepto" placeholder="Concepto (Ej: Pago de flete, Compra)" class="p-2 border border-gray-300 rounded-lg col-span-2 focus:ring-blue-500 focus:border-blue-500 text-sm">
+                        <input type="number" id="posMonto" placeholder="Monto Enviado ($)" class="p-2 border border-gray-300 rounded-lg focus:ring-blue-500 focus:border-blue-500 text-sm">
+                        <input type="text" id="posQuienEnviaInput" placeholder="Nombre del Encargado (Quien Envía)" class="p-2 border border-gray-300 rounded-lg focus:ring-blue-500 focus:border-blue-500 text-sm">
+                        <input type="text" id="posQuienRecibe" placeholder="¿Quién Recibe (Proveedor/Destino)?" class="p-2 border border-gray-300 rounded-lg focus:ring-blue-500 focus:border-blue-500 text-sm col-span-2">
+                        <button id="addMovimientoBtn" class="bg-red-600 hover:bg-red-700 text-white font-semibold py-2 px-4 rounded-lg shadow-md transition duration-300 text-sm col-span-2 mt-2">
+                            Registrar EGRESO
+                        </button>
+                    </div>
+                </div>
+
+                <!-- 4. Histórico de Movimientos -->
+                <div class="space-y-4">
+                    <h2 class="text-xl font-semibold text-gray-800">4. Histórico de Movimientos Monetarios (${movimientosPOS.length})</h2>
+                    ${movimientosPOS.length === 0 ? '<p class="text-gray-500">No hay movimientos registrados.</p>' : ''}
+                    <div class="bg-white rounded-xl divide-y divide-gray-100">
+                    ${movimientosPOS.map(m => `
+                        <div class="p-4 flex flex-col sm:flex-row justify-between items-start sm:items-center">
+                            <div class="mb-2 sm:mb-0">
+                                <p class="font-bold text-lg ${m.tipo === 'INGRESO' ? 'text-green-700' : 'text-red-700'}">
+                                    ${m.tipo === 'INGRESO' ? '+' : '-'} $${m.monto.toFixed(2)} 
+                                    <span class="text-xs font-semibold rounded-full px-2 py-0.5 ml-2 ${m.tipo === 'INGRESO' ? 'bg-green-100 text-green-800' : 'bg-red-100 text-red-800'}">
+                                        ${m.tipo}
+                                    </span>
+                                </p>
+                                <p class="text-sm text-gray-700">Concepto: <span class="font-medium">${m.concepto}</span></p>
+                                <p class="text-xs text-gray-500">Envía: ${m.encargado_envia} | Recibe: ${m.receptor_hub}</p>
+                            </div>
+                            <div class="text-right flex flex-col items-end space-y-1">
+                                <p class="text-sm font-semibold text-gray-800">${new Date(m.fecha_envio.toDate()).toLocaleTimeString('es-ES', { hour: '2-digit', minute: '2-digit' })}</p>
+                                <p class="text-xs text-gray-500">${new Date(m.fecha_envio.toDate()).toLocaleDateString('es-ES', { dateStyle: 'short' })}</p>
+                                <button data-id="${m.id}" class="delete-pos-movimiento-btn text-red-400 hover:text-red-600 text-xs mt-1">
+                                    ${svgIcon('trash', 'w-4 h-4')}
+                                </button>
+                            </div>
+                        </div>
+                    `).join('')}
+                    </div>
+                </div>
+            </div>
+        `;
+        contentContainer.innerHTML = html;
+        attachPOSEvents(); // Esta función ahora adjunta todos los eventos
+    }
+
+    // --- FUNCIÓN DE EVENTOS DE POS (PRINCIPAL) ---
+    function attachPOSEvents() {
+        
+        // --- Eventos de Gestión de POS ---
+        document.getElementById('addPosBtn')?.addEventListener('click', () => {
+            const nameInput = document.getElementById('newPosName');
+            const encargadoInput = document.getElementById('newPosEncargado');
+            const name = nameInput.value.trim();
+            const encargado = encargadoInput.value.trim();
+            
+            if (name && encargado) {
+                addPuntoDeVenta(name, encargado);
+                nameInput.value = '';
+                encargadoInput.value = '';
+            } else {
+                showModal("Faltan Datos", "Por favor, ingresa un nombre para el POS y el nombre del Encargado.", () => {}, false);
+            }
+        });
+
+        document.querySelectorAll('.delete-pos-entity-btn').forEach(btn => {
+            btn.addEventListener('click', (e) => {
+                const id = e.currentTarget.dataset.id;
+                const pos = puntosDeVenta.find(p => p.id === id);
+                if (pos) {
+                     showModal("Confirmar Eliminación", `¿Estás seguro de eliminar el POS "${pos.nombre}"? Solo puedes hacerlo si no tiene vendedores asignados ni stock.`, () => deletePuntoDeVenta(id));
+                }
+            });
+        });
+
+        // --- NUEVO: Evento para Entregar Stock al POS ---
+        document.querySelectorAll('.action-btn-entrega-pos').forEach(btn => {
+            btn.addEventListener('click', (e) => {
+                const posId = e.currentTarget.dataset.posId;
+                const productoId = document.getElementById(`prod-entrega-pos-${posId}`).value;
+                const cantidad = parseInt(document.getElementById(`qty-entrega-pos-${posId}`).value);
+                const productoNombre = productos.find(p => p.id === productoId)?.nombre || 'Producto Desconocido';
+
+                if (!productoId || isNaN(cantidad) || cantidad <= 0) {
+                    showModal("Valor Inválido", "Selecciona un producto e ingresa una cantidad válida (> 0).", () => {}, false);
+                    return;
+                }
+                
+                showLoading();
+                entregarStockAlPOS(posId, productoId, productoNombre, cantidad).then(() => {
+                    document.getElementById(`prod-entrega-pos-${posId}`).value = '';
+                    document.getElementById(`qty-entrega-pos-${posId}`).value = '';
+                    hideLoading();
+                }).catch(() => hideLoading());
+            });
+        });
+
+        // --- Eventos de Gestión de Vendedores (Ahora dentro de POS) ---
+        document.querySelectorAll('.add-vendedor-to-pos-btn').forEach(btn => {
+            btn.addEventListener('click', (e) => {
+                const posId = e.currentTarget.dataset.posId;
+                const posNombre = e.currentTarget.dataset.posNombre;
+                const nameInput = document.getElementById(`new-vendedor-name-${posId}`);
+                const name = nameInput.value.trim();
+
+                if (name && posId) {
+                    addVendedor(name, posId, posNombre);
+                    nameInput.value = '';
+                } else {
+                    showModal("Faltan Datos", "Por favor, ingresa un nombre para el vendedor.", () => {}, false);
+                }
+            });
+        });
+
+        // REESCRITO: Manejador de botones de stock (Venta) y pago
+        document.querySelectorAll('.action-btn-stock').forEach(btn => {
+            btn.addEventListener('click', (e) => {
+                const id = e.target.dataset.id; // Vendedor ID
+                const type = e.target.dataset.type;
+                const name = e.target.dataset.name; // Vendedor Nombre
+                
+                showLoading();
+
+                if (type === 'PAGO') {
+                    const monto = parseFloat(document.getElementById(`monto-pago-${id}`).value);
+                    if (isNaN(monto) || monto <= 0) {
+                        showModal("Valor Inválido", "Ingresa un monto de pago válido (> 0).", () => {}, false);
+                        hideLoading();
+                        return;
+                    }
+                    // Usamos la función vieja solo para pagos
+                    updateVendedor(id, 'PAGO', monto, name).then(() => {
+                        document.getElementById(`monto-pago-${id}`).value = '';
+                        hideLoading();
+                    }).catch(() => hideLoading());
+                
+                // CAMBIO: El tipo 'ENTREGA' ya no existe en este botón
+                
+                } else if (type === 'VENTA') {
+                    const posId = e.target.dataset.posId; // CAMBIO: Obtenemos el posId del botón
+                    const productoId = document.getElementById(`prod-venta-${id}`).value;
+                    const cantidad = parseInt(document.getElementById(`qty-venta-${id}`).value);
+
+                    if (!posId || !productoId || isNaN(cantidad) || cantidad <= 0) {
+                        showModal("Valor Inválido", "Selecciona un producto del stock del POS e ingresa una cantidad válida (> 0).", () => {}, false);
+                        hideLoading();
+                        return;
+                    }
+
+                    // CAMBIO: Pasamos el posId a venderStock
+                    venderStock(id, posId, productoId, cantidad, name).then(() => {
+                        document.getElementById(`prod-venta-${id}`).value = '';
+                        document.getElementById(`qty-venta-${id}`).value = '';
+                        hideLoading();
+                    }).catch(() => hideLoading());
+                } else {
+                    hideLoading(); // Por si acaso
+                }
+            });
+        });
+
+        document.querySelectorAll('.delete-vendedor-btn').forEach(btn => {
+            btn.addEventListener('click', (e) => {
+                const id = e.target.dataset.id;
+                const vendedor = vendedores.find(v => v.id === id);
+                if (vendedor) {
+                    showModal("Confirmar Eliminación", `¿Estás seguro de eliminar a ${vendedor.nombre}? Esto es irreversible.`, () => deleteVendedor(id));
+                }
+            });
+        });
+
+        // --- Eventos de Movimientos Monetarios (Egresos) ---
+        document.getElementById('addMovimientoBtn')?.addEventListener('click', () => {
+            const concepto = document.getElementById('posConcepto').value.trim() || 'Egreso Manual POS';
+            const monto = parseFloat(document.getElementById('posMonto').value);
+            const envia = document.getElementById('posQuienEnviaInput').value.trim(); 
+            const recibe = document.getElementById('posQuienRecibe').value.trim();
+
+            if (concepto && envia && recibe && !isNaN(monto) && monto > 0) {
+                showLoading();
+                addMovimientoPOS(concepto, monto, envia, recibe, 'EGRESO').then(() => {
+                    document.getElementById('posMonto').value = '';
+                    document.getElementById('posQuienRecibe').value = '';
+                    document.getElementById('posQuienEnviaInput').value = '';
+                    document.getElementById('posConcepto').value = '';
+                    hideLoading();
+                }).catch(() => hideLoading());
+            } else {
+                showModal("Faltan Datos", "Por favor, ingresa un concepto, quién envía, quién recibe y un monto válido (> 0).", () => {}, false);
+            }
+        });
+
+        document.querySelectorAll('.delete-pos-movimiento-btn').forEach(btn => {
+            btn.addEventListener('click', (e) => {
+                const id = e.currentTarget.dataset.id;
+                showModal("Confirmar Eliminación", `¿Estás seguro de eliminar este movimiento de dinero?`, () => deleteMovimientoPOS(id));
+            });
+        });
+    }
+
+    // --- RENDERIZADO PESTAÑA RESUMEN ---
+    function calculateGlobalMetrics() {
+        const vendedorDeudas = vendedores.map(v => {
+            const stats = calculateVendedorStats(v);
+            return { nombre: v.nombre, deuda: Math.max(0, stats.pendiente_de_pago) };
+        }).filter(d => d.deuda > 0.01); 
+
+        const totalDeudaPendiente = vendedorDeudas.reduce((sum, d) => sum + d.deuda, 0);
+        
+        const totalVentaBruta = vendedores.reduce((sum, v) => sum + (v.deuda_generada || 0), 0);
+
+        const comisionVendedorTotal = totalVentaBruta * (porcentajeVendedor / 100);
+        const comisionEncargadoPOSTotal = totalVentaBruta * (porcentajeEncargadoPOS / 100);
+        const gananciaOperacionalBruta = totalVentaBruta - comisionVendedorTotal - comisionEncargadoPOSTotal;
+
+        const totalIngresosPOS = movimientosPOS.filter(m => m.tipo === 'INGRESO').reduce((sum, m) => sum + m.monto, 0);
+        const totalEgresosPOS = movimientosPOS.filter(m => m.tipo === 'EGRESO').reduce((sum, m) => sum + m.monto, 0);
+        const totalGastosHub = gastos.reduce((sum, g) => sum + g.monto, 0);
+        const totalEgresosGlobal = totalEgresosPOS + totalGastosHub;
+        const capitalNeto = totalIngresosPOS - totalEgresosGlobal;
+        
+        // CAMBIO: Calcular stock total en POS
+        const stockTotalEnPOS = stockPOS.reduce((sum, s) => sum + s.cantidad, 0);
+
+        return {
+            totalDeudaPendiente, 
+            totalIngresosPOS, totalEgresosPOS,
+            totalGastosHub, totalEgresosGlobal, capitalNeto, vendedorDeudas, 
+            totalVentaBruta, comisionVendedorTotal, comisionEncargadoPOSTotal, gananciaOperacionalBruta,
+            stockTotalEnPOS // NUEVO
+        };
+    }
+
+    function renderResumen() {
+        const metrics = calculateGlobalMetrics();
+        const vendedorDeudaList = metrics.vendedorDeudas.map(d => `- ${d.nombre}: $${d.deuda.toFixed(2)}`).join('\n');
+
+        const resumenText = `
+**RESUMEN GENERAL DEL NEGOCIO**
+Fecha del Reporte: ${new Date().toLocaleDateString('es-ES')} a las ${new Date().toLocaleTimeString('es-ES')}
+---
+**MÉTRICAS DE RENTABILIDAD BRUTA (Basado en Venta Bruta Total)**
+- Venta Bruta Total Generada (Deuda Total): $${metrics.totalVentaBruta.toFixed(2)}
+- Comisión Vendedor (${porcentajeVendedor.toFixed(0)}%): $${metrics.comisionVendedorTotal.toFixed(2)}
+- Comisión Encargado POS (${porcentajeEncargadoPOS.toFixed(0)}%): $${metrics.comisionEncargadoPOSTotal.toFixed(2)}
+- GANANCIA OPERACIONAL BRUTA (Administrador/Negocio): $${metrics.gananciaOperacionalBruta.toFixed(2)}
+---
+**DEUDAS DE VENDEDORES**
+- Total Deuda Pendiente por Cobrar: $${metrics.totalDeudaPendiente.toFixed(2)}
+${vendedorDeudaList.length > 0 ? '\nDETALLE POR VENDEDOR:\n' + vendedorDeudaList : '- No hay deudas pendientes.'}
+---
+**INVENTARIO Y STOCK**
+- Stock Total en Puntos de Venta (Unidades): ${metrics.stockTotalEnPOS.toFixed(0)}
+---
+**FLUJO DE CAJA Y CAPITAL**
+- TOTAL INGRESOS (Pagos de Deuda Vendedores): + $${metrics.totalIngresosPOS.toFixed(2)}
+- EGRESOS POS (Pagos a Proveedores/Manuales): - $${metrics.totalEgresosPOS.toFixed(2)}
+- GASTOS HUB (Gastos Fijos/Adicionales): - $${metrics.totalGastosHub.toFixed(2)}
+- TOTAL EGRESOS GLOBALES: - $${metrics.totalEgresosGlobal.toFixed(2)}
+- CAPITAL NETO (Ingresos - Egresos Globales): $${metrics.capitalNeto.toFixed(2)}
+---
+**INFORMACIÓN ADICIONAL**
+- (Precio Unitario ahora es por producto)
+- ID de la Aplicación: ${appId}
+        `.trim();
+
+        const html = `
+            <div class="space-y-6">
+                <div class="card bg-white p-6 rounded-xl">
+                    <h2 class="text-2xl font-bold mb-4 text-gray-800">Resumen Financiero Rápido</h2>
+                    <div class="grid grid-cols-1 sm:grid-cols-3 gap-4 mb-6">
+                        <div class="p-3 bg-red-50 rounded-lg">
+                            <p class="text-sm font-medium text-red-600">DEUDA PENDIENTE</p>
+                            <p class="text-3xl font-extrabold text-red-700">$${metrics.totalDeudaPendiente.toFixed(2)}</p>
+                        </div>
+                        <div class="p-3 bg-green-50 rounded-lg">
+                            <p class="text-sm font-medium text-green-600">CAPITAL NETO</p>
+                            <p class="text-3xl font-extrabold ${metrics.capitalNeto >= 0 ? 'text-green-700' : 'text-red-700'}">$${metrics.capitalNeto.toFixed(2)}</p>
+                        </div>
+                        <div class="p-3 bg-blue-50 rounded-lg">
+                            <p class="text-sm font-medium text-blue-600">STOCK EN POS (Uds)</p>
+                            <p class="text-3xl font-extrabold text-blue-700">${metrics.stockTotalEnPOS.toFixed(0)}</p>
+                        </div>
+                    </div>
+                    
+                    <h3 class="font-bold text-gray-800 border-t pt-4 mt-4">Distribución de Ganancia Bruta (Venta Bruta: $${metrics.totalVentaBruta.toFixed(2)})</h3>
+                    <div class="space-y-2 mb-6 p-4 border rounded-lg bg-indigo-50">
+                        <div class="flex justify-between text-sm">
+                            <span class="text-indigo-600 font-medium">Ganancia Bruta Vendedor (${porcentajeVendedor.toFixed(0)}%)</span>
+                            <span class="font-bold text-indigo-700">$${metrics.comisionVendedorTotal.toFixed(2)}</span>
+                        </div>
+                        <div class="flex justify-between text-sm">
+                            <span class="text-indigo-600 font-medium">Ganancia Bruta Encargado POS (${porcentajeEncargadoPOS.toFixed(0)}%)</span>
+                            <span class="font-bold text-indigo-700">$${metrics.comisionEncargadoPOSTotal.toFixed(2)}</span>
+                        </div>
+                        <div class="flex justify-between text-sm">
+                            <span class="text-indigo-600 font-medium">GANANCIA OPERACIONAL BRUTA (Admin)</span>
+                            <span class="font-bold text-indigo-700">$${metrics.gananciaOperacionalBruta.toFixed(2)}</span>
+                        </div>
+                    </div>
+
+                    <div class="space-y-2 mb-6 p-4 border rounded-lg bg-gray-50">
+                        <h3 class="font-bold text-gray-800">Detalle de Flujo de Caja</h3>
+                        <div class="flex justify-between text-sm">
+                            <span class="text-green-600 font-medium">TOTAL INGRESOS POS (Deuda)</span>
+                            <span class="font-bold text-green-700">+ $${metrics.totalIngresosPOS.toFixed(2)}</span>
+                        </div>
+                        <div class="flex justify-between text-sm">
+                            <span class="text-red-600 font-medium">EGRESOS POS (Pagos a Proveedor)</span>
+                            <span class="font-bold text-red-700">- $${metrics.totalEgresosPOS.toFixed(2)}</span>
+                        </div>
+                        <div class="flex justify-between text-sm">
+                            <span class="text-red-600 font-medium">GASTOS HUB (Adicionales)</span>
+                            <span class="font-bold text-red-700">- $${metrics.totalGastosHub.toFixed(2)}</span>
+                        </div>
+                    </div>
+
+                    <button id="copyResumenBtn" class="w-full bg-indigo-600 hover:bg-indigo-700 text-white font-semibold py-3 px-4 rounded-lg shadow-md transition duration-300 text-sm flex items-center justify-center">
+                        ${svgIcon('copy', 'w-5 h-5 mr-2')} Copiar Resumen para Compartir
+                    </button>
+                </div>
+                <div class="card bg-gray-800 p-4 rounded-xl">
+                    <h3 class="text-lg font-semibold text-white mb-2">Detalle del Texto a Compartir</h3>
+                    <pre id="resumenTextDisplay" class="text-gray-200 text-xs whitespace-pre-wrap">${resumenText}</pre>
+                </div>
+            </div>
+        `;
+        contentContainer.innerHTML = html;
+        attachResumenEvents(resumenText);
+    }
+
+    /**
+     * @param {string} text
+     */
+    function copyToClipboard(text) {
+        const tempTextarea = document.createElement('textarea');
+        tempTextarea.value = text;
+        tempTextarea.style.position = 'fixed';
+        tempTextarea.style.opacity = '0';
+        document.body.appendChild(tempTextarea);
+        tempTextarea.select();
+        try {
+            document.execCommand('copy');
+            showModal("Copiado", "¡El resumen ha sido copiado al portapapeles!", () => {}, false);
+        } catch (err) {
+            console.error('Error al copiar: ', err);
+            showModal("Error", "No se pudo copiar el texto.", () => {}, false);
+        }
+        document.body.removeChild(tempTextarea);
+    }
+
+    /**
+     * @param {string} resumenText
+     */
+    function attachResumenEvents(resumenText) {
+        document.getElementById('copyResumenBtn')?.addEventListener('click', () => {
+            copyToClipboard(resumenText);
+        });
+    }
+
+    // --- RENDERIZADO PESTAÑA GASTOS ---
+    /**
+     * @param {number} monto
+     * @param {string} concepto
+     * @param {string} categoria
+     */
+    async function addGasto(monto, concepto, categoria) {
+        if (!db || !isAuthReady) return;
+        try {
+            showLoading();
+            await addDoc(collection(db, getCollectionPath('gastos')), {
+                fecha: Timestamp.now(),
+                monto: monto,
+                concepto: concepto,
+                categoria: categoria,
+                registrado_por: userId,
+            });
+            hideLoading();
+        } catch (e) {
+            console.error("Error adding gasto:", e);
+            hideLoading();
+            showModal("Error", "No se pudo registrar el gasto.", () => {}, false);
+        }
+    }
+
+    function renderGastos() {
+        const totalGastos = gastos.reduce((sum, g) => sum + g.monto, 0);
+        const uniqueCategories = [...new Set(gastos.map(g => g.categoria))].sort();
+
+        const html = `
+            <div class="space-y-6">
+                <div class="card bg-white p-4 rounded-xl">
+                    <h2 class="text-xl font-semibold mb-3 text-gray-800">Registrar Nuevo Gasto</h2>
+                    <div class="grid grid-cols-2 gap-4">
+                        <input type="number" id="gastoMonto" placeholder="Monto del Gasto ($)" class="p-2 border border-gray-300 rounded-lg focus:ring-blue-500 focus:border-blue-500 text-sm">
+                        <input type="text" id="gastoCategoria" placeholder="Categoría (Ej: Renta, Transporte)" list="gastoCategoriesList" class="p-2 border border-gray-300 rounded-lg focus:ring-blue-500 focus:border-blue-500 text-sm">
+                        <datalist id="gastoCategoriesList">
+                            ${uniqueCategories.map(cat => `<option value="${cat}">`).join('')}
+                        </datalist>
+                        <textarea id="gastoConcepto" placeholder="Concepto o Descripción del Gasto" rows="2" class="p-2 border border-gray-300 rounded-lg focus:ring-blue-500 focus:border-blue-500 text-sm col-span-2"></textarea>
+                        <button id="addGastoBtn" class="bg-red-600 hover:bg-red-700 text-white font-semibold py-2 px-4 rounded-lg shadow-md transition duration-300 text-sm col-span-2 mt-2">
+                            Registrar Gasto
+                        </button>
+                    </div>
+                </div>
+                <div class="space-y-4">
+                    <div class="flex justify-between items-center">
+                        <h2 class="text-xl font-semibold text-gray-800">Histórico de Gastos (${gastos.length})</h2>
+                        <p class="text-lg font-bold text-red-600">Total: $${totalGastos.toFixed(2)}</p>
+                    </div>
+                    ${gastos.length === 0 ? '<p class="text-gray-500">No hay gastos registrados.</p>' : ''}
+                    <div class="bg-white rounded-xl divide-y divide-gray-100">
+                    ${gastos.map(g => `
+                        <div class="p-4 flex flex-col sm:flex-row justify-between items-start sm:items-center">
+                            <div class="mb-2 sm:mb-0">
+                                <p class="font-bold text-lg text-red-600">-$${g.monto.toFixed(2)}</p>
+                                <p class="text-sm text-gray-700"><span class="font-medium">${g.concepto}</span></p>
+                                <p class="text-xs text-gray-500">Categoría: ${g.categoria}</p>
+                            </div>
+                            <div class="text-right flex items-center space-x-3">
+                                <p class="text-sm text-gray-500">${new Date(g.fecha.toDate()).toLocaleString('es-ES', { dateStyle: 'short' })}</p>
+                                <button data-id="${g.id}" class="delete-gasto-btn text-red-400 hover:text-red-600 text-xs">
+                                    ${svgIcon('trash', 'w-4 h-4')}
+                                </button>
+                            </div>
+                        </div>
+                    `).join('')}
+                    </div>
+                </div>
+            </div>
+        `;
+        contentContainer.innerHTML = html;
+        attachGastosEvents();
+    }
+
+    function attachGastosEvents() {
+        document.getElementById('addGastoBtn')?.addEventListener('click', () => {
+            const monto = parseFloat(document.getElementById('gastoMonto').value);
+            const concepto = document.getElementById('gastoConcepto').value.trim();
+            const categoria = document.getElementById('gastoCategoria').value.trim() || 'Sin Categoría';
+            if (!isNaN(monto) && monto > 0 && concepto) {
+                showLoading();
+                addGasto(monto, concepto, categoria).then(() => {
+                    document.getElementById('gastoMonto').value = '';
+                    document.getElementById('gastoConcepto').value = '';
+                    document.getElementById('gastoCategoria').value = '';
+                    hideLoading();
+                }).catch(() => hideLoading());
+            } else {
+                showModal("Faltan Datos", "Por favor, ingresa un monto válido (> 0) y el concepto del gasto.", () => {}, false);
+            }
+        });
+
+        document.querySelectorAll('.delete-gasto-btn').forEach(btn => {
+            btn.addEventListener('click', (e) => {
+                const id = e.currentTarget.dataset.id;
+                showModal("Confirmar Eliminación", `¿Estás seguro de eliminar este gasto?`, () => deleteGasto(id));
+            });
+        });
+    }
+
+    /**
+     * @param {string} id
+     */
+    async function deleteGasto(id) {
+        if (!db || !isAuthReady) return;
+        try {
+            showLoading();
+            await deleteDoc(doc(db, getCollectionPath('gastos'), id));
+            hideLoading();
+        } catch (e) {
+            console.error("Error deleting gasto:", e);
+            hideLoading();
+            showModal("Error", "No se pudo eliminar el gasto.", () => {}, false);
+        }
+    }
+
+    // --- RENDERIZADO PESTAÑA PRODUCTOS (NUEVA) ---
+
+    /**
+     * @param {string} nombre
+     * @param {number} precio
+     */
+    async function addProducto(nombre, precio) {
+        if (!db || !isAuthReady) return;
+        try {
+            showLoading();
+            await addDoc(collection(db, getCollectionPath('productos')), {
+                nombre: nombre,
+                precio: precio,
+                creado_en: Timestamp.now(),
+            });
+            hideLoading();
+        } catch (e) {
+            console.error("Error adding producto:", e);
+            hideLoading();
+            showModal("Error", "No se pudo agregar el producto.", () => {}, false);
+        }
+    }
+
+    /**
+     * @param {string} id
+     */
+    async function deleteProducto(id) {
+        if (!db || !isAuthReady) return;
+        
+        // CAMBIO: Validar que el producto no esté en el stock de ningún POS
+        const isInStock = stockPOS.some(s => s.productoId === id && s.cantidad > 0);
+        if (isInStock) {
+            showModal("Acción Bloqueada", "No puedes eliminar este producto porque actualmente hay Puntos de Venta que tienen stock del mismo. Vende o reasigna ese stock primero.", () => {}, false);
+            return;
+        }
+
+        try {
+            showLoading();
+            await deleteDoc(doc(db, getCollectionPath('productos'), id));
+            hideLoading();
+        } catch (e) {
+            console.error("Error deleting producto:", e);
+            hideLoading();
+            showModal("Error", "No se pudo eliminar el producto.", () => {}, false);
+        }
+    }
+
+    function renderProductos() {
+        const html = `
+            <div class="space-y-6">
+                <div class="card bg-white p-4 rounded-xl">
+                    <h2 class="text-xl font-semibold mb-3 text-gray-800">Agregar Nuevo Producto al Catálogo</h2>
+                    <div class="grid grid-cols-1 sm:grid-cols-3 gap-4">
+                        <input type="text" id="newProductoNombre" placeholder="Nombre del Producto" class="p-2 border border-gray-300 rounded-lg focus:ring-blue-500 focus:border-blue-500 text-sm sm:col-span-2">
+                        <input type="number" id="newProductoPrecio" placeholder="Precio de Venta ($)" class="p-2 border border-gray-300 rounded-lg focus:ring-blue-500 focus:border-blue-500 text-sm">
+                    </div>
+                    <button id="addProductoBtn" class="w-full bg-blue-600 hover:bg-blue-700 text-white font-semibold py-2 px-4 rounded-lg shadow-md transition duration-300 text-sm mt-4">
+                        Agregar Producto
+                    </button>
+                </div>
+
+                <div class="space-y-4">
+                    <h2 class="text-xl font-semibold text-gray-800">Catálogo de Productos (${productos.length})</h2>
+                    ${productos.length === 0 ? '<p class="text-gray-500">No hay productos en tu catálogo.</p>' : ''}
+                    <div class="bg-white rounded-xl divide-y divide-gray-100 shadow-sm border">
+                    ${productos.map(p => `
+                        <div class="p-4 flex justify-between items-center">
+                            <div>
+                                <p class="font-bold text-lg text-gray-800">${p.nombre}</p>
+                                <p class="text-sm text-gray-600">ID: ${p.id.substring(0, 10)}...</p>
+                            </div>
+                            <div class="text-right flex items-center space-x-4">
+                                <p class="text-xl font-bold text-green-600">$${(p.precio || 0).toFixed(2)}</p>
+                                <button data-id="${p.id}" class="delete-producto-btn text-red-400 hover:text-red-600 text-xs">
+                                    ${svgIcon('trash', 'w-5 h-5')}
+                                </button>
+                            </div>
+                        </div>
+                    `).join('')}
+                    </div>
+                </div>
+            </div>
+        `;
+        contentContainer.innerHTML = html;
+        attachProductosEvents();
+    }
+
+    function attachProductosEvents() {
+        document.getElementById('addProductoBtn')?.addEventListener('click', () => {
+            const nombre = document.getElementById('newProductoNombre').value.trim();
+            const precio = parseFloat(document.getElementById('newProductoPrecio').value);
+
+            if (nombre && !isNaN(precio) && precio > 0) {
+                addProducto(nombre, precio);
+                document.getElementById('newProductoNombre').value = '';
+                document.getElementById('newProductoPrecio').value = '';
+            } else {
+                showModal("Faltan Datos", "Por favor, ingresa un nombre y un precio válido (> 0) para el producto.", () => {}, false);
+            }
+        });
+
+        document.querySelectorAll('.delete-producto-btn').forEach(btn => {
+            btn.addEventListener('click', (e) => {
+                const id = e.currentTarget.dataset.id;
+                const prod = productos.find(p => p.id === id);
+                showModal("Confirmar Eliminación", `¿Estás seguro de eliminar "${prod.nombre}"? No podrás hacerlo si algún POS tiene stock de este producto.`, () => deleteProducto(id));
+            });
+        });
+    }
+
+
+    // --- RENDERIZADO PESTAÑA CONFIGURACIÓN ---
+    /**
+     * @param {number} newVendorPct
+     * @param {number} newPosPct
+     */
+    async function updateConfig(newVendorPct, newPosPct) {
+        if (!db || !isAuthReady) return;
+        if (newVendorPct + newPosPct > 100) {
+            showModal("Error de Porcentaje", "La suma de los porcentajes de Vendedor y Encargado POS no puede ser mayor al 100%.", () => {}, false);
+            return;
+        }
+        try {
+            showLoading();
+            await setDoc(doc(db, getCollectionPath('config'), 'global'), { 
+                porcentajeVendedor: newVendorPct,
+                porcentajeEncargadoPOS: newPosPct,
+            }, { merge: true });
+            porcentajeVendedor = newVendorPct;
+            porcentajeEncargadoPOS = newPosPct;
+            hideLoading();
+            showModal("Éxito", `La configuración ha sido actualizada.`, () => {}, false);
+        } catch (e) {
+            console.error("Error updating config:", e);
+            hideLoading();
+            showModal("Error", "No se pudo actualizar la configuración.", () => {}, false);
+        }
+    }
+
+    function renderConfiguracion() {
+        const adminPct = 100 - porcentajeVendedor - porcentajeEncargadoPOS;
+        const html = `
+            <div class="space-y-6">
+                <div class="card bg-white p-6 rounded-xl">
+                    <h2 class="text-2xl font-semibold mb-4 text-gray-800">Configuración de Ganancias</h2>
+                    
+                    <div class="mb-6 pb-4 border-b border-gray-100">
+                        <h3 class="text-lg font-semibold text-gray-800">Gestión de Precios</h3>
+                        <p class="text-xs text-gray-500 mb-3">La gestión de precios por unidad ha sido movida. Ahora puedes asignar un precio individual a cada ítem en la nueva pestaña <strong>"Productos"</strong>.</p>
+                        <button id="goToProductosBtn" class="bg-blue-100 text-blue-800 font-medium py-2 px-4 rounded-lg text-sm hover:bg-blue-200 transition">
+                            Ir a Productos
+                        </button>
+                    </div>
+
+                    <h3 class="text-xl font-semibold mb-3 text-gray-800">Distribución de Ganancia Bruta (100%)</h3>
+                    <p class="text-xs text-red-500 mb-4 font-semibold">Define qué porcentaje de la Venta Bruta (basada en el precio del producto) se asigna a cada rol.</p>
+                    
+                    <div class="grid grid-cols-2 gap-4">
+                        <div>
+                            <label class="block text-sm font-medium text-gray-700 mb-1" for="vendorPct">Vendedor (%)</label>
+                            <input type="number" id="vendorPctInput" value="${porcentajeVendedor.toFixed(0)}" step="1" min="0" max="100" 
+                                class="w-full p-2 border border-gray-300 rounded-lg text-sm">
+                        </div>
+                        <div>
+                            <label class="block text-sm font-medium text-gray-700 mb-1" for="posPct">Encargado POS (%)</label>
+                            <input type="number" id="posPctInput" value="${porcentajeEncargadoPOS.toFixed(0)}" step="1" min="0" max="100" 
+                                class="w-full p-2 border border-gray-300 rounded-lg text-sm">
+                        </div>
+                    </div>
+                    
+                    <div class="mt-4 p-3 bg-blue-50 rounded-lg border border-blue-200">
+                        <p class="text-sm font-semibold text-blue-800">Administrador/Negocio (Residual): 
+                            <span id="adminPctDisplay" class="font-extrabold">${adminPct.toFixed(adminPct % 1 !== 0 ? 2 : 0)}%</span>
+                        </p>
+                    </div>
+
+                    <button id="saveConfigBtn" class="w-full bg-blue-600 hover:bg-blue-700 text-white font-semibold py-3 px-4 rounded-lg shadow-md transition duration-300 text-sm mt-6">
+                        Guardar Configuración
+                    </button>
+
+                    <div class="mt-8 pt-4 border-t border-gray-200">
+                        <h3 class="text-xl font-semibold mb-2 text-gray-800">ID del Sistema</h3>
+                        <p class="text-sm text-gray-600 break-all">ID de la Aplicación (Para compartir datos):</p>
+                        <code class="block bg-gray-100 p-2 rounded-lg text-xs mt-1 text-gray-800">${appId}</code>
+                        <p class="text-sm text-gray-600 mt-4 break-all">ID de Usuario (Su identificador actual):</p>
+                        <code class="block bg-gray-100 p-2 rounded-lg text-xs mt-1 text-gray-800">${userId || 'Aún no asignado'}</code>
+                    </div>
+                </div>
+            </div>
+        `;
+        contentContainer.innerHTML = html;
+        attachConfigEvents();
+    }
+
+    function attachConfigEvents() {
+        const vendorInput = document.getElementById('vendorPctInput');
+        const posInput = document.getElementById('posPctInput');
+        const adminPctDisplay = document.getElementById('adminPctDisplay');
+        const saveBtn = document.getElementById('saveConfigBtn');
+
+        const updateAdminPct = () => {
+            const v = parseFloat(vendorInput.value) || 0;
+            const p = parseFloat(posInput.value) || 0;
+            const adminPct = 100 - v - p;
+            adminPctDisplay.textContent = `${adminPct.toFixed(adminPct % 1 !== 0 ? 2 : 0)}%`;
+            adminPctDisplay.classList.toggle('text-red-700', adminPct < 0);
+            adminPctDisplay.classList.toggle('text-blue-800', adminPct >= 0);
+        };
+        vendorInput.addEventListener('input', updateAdminPct);
+        posInput.addEventListener('input', updateAdminPct);
+        updateAdminPct(); 
+
+        document.getElementById('goToProductosBtn')?.addEventListener('click', () => {
+            renderTab(TABS.PRODUCTOS);
+        });
+
+        saveBtn?.addEventListener('click', () => {
+            const newVendorPct = parseFloat(vendorInput.value);
+            const newPosPct = parseFloat(posInput.value);
+            const totalPct = newVendorPct + newPosPct;
+
+            if (isNaN(newVendorPct) || newVendorPct < 0 || isNaN(newPosPct) || newPosPct < 0) {
+                showModal("Valor Inválido", "Los porcentajes deben ser positivos.", () => {}, false); return;
+            }
+            if (totalPct > 100) {
+                 showModal("Error de Porcentaje", `La suma de comisiones (${totalPct.toFixed(0)}%) excede el 100%.`, () => {}, false); return;
+            }
+            showModal("Confirmar Cambio", `¿Guardar nueva configuración de comisiones? (V ${newVendorPct}%, POS ${newPosPct}%)`, 
+                () => updateConfig(newVendorPct, newPosPct)
+            );
+        });
+    }
+
+    // --- General Event Listeners and Initialization ---
+    tabButtons.forEach(button => {
+        button.addEventListener('click', (e) => renderTab(e.target.dataset.tab));
+    });
+
+    /**
+     * @param {string} iconName
+     * @param {string} classes
+     */
+    function svgIcon(iconName, classes) {
+        const icons = {
+            'trash': `<svg class="${classes}" fill="none" viewBox="0 0 24 24" stroke="currentColor" xmlns="http://www.w3.org/2000/svg"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"/></svg>`,
+            'close': `<svg class="${classes}" fill="none" viewBox="0 0 24 24" stroke="currentColor" xmlns="http://www.w3.org/2000/svg"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/></svg>`,
+            'copy': `<svg class="${classes}" fill="none" viewBox="0 0 24 24" stroke="currentColor" xmlns="http://www.w3.org/2000/svg"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 7v4a1 1 0 001 1h5m-5-4h4a1 1 0 011 1v7m-4-7v7a1 1 0 01-1 1H3a1 1 0 01-1-1V9a1 1 0 011-1h7M17 9l4 4m0 0l-4 4m4-4H9"/></svg>`,
+            'store': `<svg class="${classes}" fill="none" viewBox="0 0 24 24" stroke="currentColor" xmlns="http://www.w3.org/2000/svg"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M16 11V7a4 4 0 00-8 0v4M5 9h14l1 12H4L5 9z"/></svg>`,
+            'warning': `<svg class="${classes}" fill="none" viewBox="0 0 24 24" stroke="currentColor" xmlns="http://www.w3.org/2000/svg"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z"/></svg>`
+        };
+        return icons[iconName] || '';
+    }
+</script>
+
+</body>
+</html>
