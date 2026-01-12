@@ -74,10 +74,20 @@
     </div>
 </div>
 
-<script type="module">
-    import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
-    import { getAuth, signInAnonymously, signInWithCustomToken, onAuthStateChanged, setPersistence, browserSessionPersistence } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
-    import { getFirestore, doc, setDoc, onSnapshot, collection, query, updateDoc, deleteDoc, addDoc, Timestamp, runTransaction, setLogLevel } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
+     <script>
+    // Single-file app: localStorage + timestamps + PDF export + cantidad en asignaciones
+    (function () {
+      const ASSIGN_KEY = 'cv_assignments';
+      const MOV_KEY = 'cv_movements';
+
+      // Genera un id simple
+      function genId() { return Date.now().toString(36) + Math.random().toString(36).slice(2,8); }
+
+      function read(key) {
+        try { return JSON.parse(localStorage.getItem(key) || '[]'); }
+        catch(e){ return []; }
+      }
+
 
     // --- Variables Globales ---
     const TABS = { POS: 'pos', PRODUCTOS: 'productos', GASTOS: 'gastos', RESUMEN: 'resumen', CONFIG: 'config' };
