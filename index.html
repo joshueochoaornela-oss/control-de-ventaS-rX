@@ -102,14 +102,6 @@
     let porcentajeVendedor = 20;
     let porcentajeEncargadoPOS = 10;
 
-    let userId = null;
-    let db, auth;
-    let isAuthReady = false;
-    let firestoreListenersUnsubscribe = [];
-    
-    const appId = typeof __app_id !== 'undefined' ? __app_id : 'default-app-id';
-    const firebaseConfig = typeof __firebase_config !== 'undefined' ? JSON.parse(__firebase_config) : null;
-    const initialAuthToken = typeof __initial_auth_token !== 'undefined' ? __initial_auth_token : null;
 
     // --- DOM Elements ---
     const contentContainer = document.getElementById('content-container');
@@ -117,59 +109,7 @@
     const loadingOverlay = document.getElementById('loading-overlay');
     const userIdDisplay = document.getElementById('userIdDisplay');
 
-    // --- Firebase Initialization and Auth ---
-    if (firebaseConfig) {
-        setLogLevel('debug');
-        const app = initializeApp(firebaseConfig);
-        db = getFirestore(app);
-        auth = getAuth(app);
-
-        const setupAuth = async () => {
-            try {
-                await setPersistence(auth, browserSessionPersistence);
-                if (initialAuthToken) {
-                    await signInWithCustomToken(auth, initialAuthToken);
-                } else {
-                    await signInAnonymously(auth);
-                }
-            } catch (error) {
-                console.error("Firebase Auth Error:", error);
-            }
-        };
-
-        onAuthStateChanged(auth, (user) => {
-            for (const unsubscribe of firestoreListenersUnsubscribe) {
-                unsubscribe();
-            }
-            firestoreListenersUnsubscribe = [];
-            console.log("Limpiando listeners anteriores.");
-
-            if (user) {
-                console.log("Usuario autenticado:", user.uid);
-                userId = user.uid;
-                userIdDisplay.textContent = `ID Usuario: ${userId.substring(0, 10)}...`;
-                isAuthReady = true;
-                setupFirestoreListeners(); 
-                renderTab(currentTab);
-                hideLoading();
-            } else {
-                console.log("Usuario no autenticado, esperando...");
-                userId = null;
-                isAuthReady = false;
-                userIdDisplay.textContent = 'Autenticando...';
-                showLoading();
-            }
-        });
-
-        setupAuth();
-    } else {
-        console.error("Firebase config not available. Running in mock mode.");
-        userIdDisplay.textContent = 'Modo Simulación';
-        isAuthReady = true;
-        hideLoading();
-        renderTab(currentTab);
-    }
-
+   
     // --- Utility Functions ---
     function showLoading() { loadingOverlay.classList.remove('opacity-0', 'pointer-events-none'); }
     function hideLoading() { loadingOverlay.classList.add('opacity-0', 'pointer-events-none'); }
